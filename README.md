@@ -21,6 +21,23 @@ Reusable Go CLI for reorganizing mixed backup files into personal-data categorie
 go build ./cmd/archive-images
 ```
 
+### Pre-built binaries
+
+Pre-compiled binaries for Windows, macOS, and Linux (AMD64 and ARM64) are available on the [Releases page](https://github.com/matthias/archive-images/releases).
+
+Just download the binary for your platform, make it executable (`chmod +x archive-images-linux-amd64` on Unix), and run it.
+
+### GitHub Actions CI/CD
+
+This project uses GitHub Actions to automatically build binaries for all supported platforms whenever a release is tagged. Simply push a tag like `v1.0.0` to trigger a build:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+GitHub will build the binaries and create a release with downloadable artifacts within minutes.
+
 ## Flags
 
 | Flag | Default | Description |

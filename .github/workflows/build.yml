@@ -1,0 +1,89 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          # Linux
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+            artifact: archive-images-linux-amd64
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+            artifact: archive-images-linux-arm64
+          
+          # macOS
+          - os: darwin
+            arch: amd64
+            runner: macos-latest
+            artifact: archive-images-macos-amd64
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+            artifact: archive-images-macos-arm64
+          
+          # Windows
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+            artifact: archive-images-windows-amd64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Build
+        run: go build -o ${{ matrix.artifact }} ./cmd/archive-images
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: ./binaries
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find binaries -type f -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
