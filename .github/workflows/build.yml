@@ -40,10 +40,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: .
 
       - uses: actions/setup-go@v4
         with:
           go-version: '1.21'
+
+      - name: Debug - Show directory structure
+        run: |
+          pwd
+          ls -la
+          ls -la cmd/
+          test -d cmd/archive-images && echo "✓ cmd/archive-images exists" || echo "✗ cmd/archive-images NOT found"
+          test -f cmd/archive-images/main.go && echo "✓ main.go exists" || echo "✗ main.go NOT found"
 
       - name: Build
         run: |
