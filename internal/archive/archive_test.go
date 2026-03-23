@@ -20,8 +20,8 @@ func TestIsSupportedArchive(t *testing.T) {
 	if !IsSupportedArchive("backup.tgz") {
 		t.Fatal("expected tgz to be supported")
 	}
-	if IsSupportedArchive("backup.rar") {
-		t.Fatal("did not expect rar to be supported")
+	if !IsSupportedArchive("backup.rar") {
+		t.Fatal("expected rar to be supported")
 	}
 }
 

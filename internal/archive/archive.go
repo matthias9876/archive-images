@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
 func IsSupportedArchive(path string) bool {
 	p := strings.ToLower(path)
-	return strings.HasSuffix(p, ".zip") || strings.HasSuffix(p, ".tar") || strings.HasSuffix(p, ".tar.gz") || strings.HasSuffix(p, ".tgz")
+	return strings.HasSuffix(p, ".zip") || strings.HasSuffix(p, ".tar") || strings.HasSuffix(p, ".tar.gz") || strings.HasSuffix(p, ".tgz") || strings.HasSuffix(p, ".rar")
 }
 
 func Extract(path string, destination string) error {
@@ -25,6 +26,8 @@ func Extract(path string, destination string) error {
 		return extractTar(path, destination, false)
 	case strings.HasSuffix(p, ".tar.gz") || strings.HasSuffix(p, ".tgz"):
 		return extractTar(path, destination, true)
+	case strings.HasSuffix(p, ".rar"):
+		return extractRar(path, destination)
 	default:
 		return fmt.Errorf("unsupported archive: %s", path)
 	}
@@ -130,6 +133,15 @@ func sanitizeMode(mode os.FileMode) os.FileMode {
 		return 0o644
 	}
 	return mode.Perm()
+}
+
+func extractRar(path string, destination string) error {
+	// Use unrar command-line tool to extract RAR archives
+	cmd := exec.Command("unrar", "x", "-y", path, destination+string(filepath.Separator))
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("unrar extraction failed: %w (ensure unrar is installed)", err)
+	}
+	return nil
 }
 
 func secureJoin(root string, relative string) (string, error) {

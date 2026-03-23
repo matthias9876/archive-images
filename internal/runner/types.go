@@ -1,12 +1,13 @@
 package runner
 
 type Config struct {
-	Sources         []string
-	DestinationRoot string
-	DryRun          bool
-	ReportPath      string
-	MaxArchiveDepth int
-	Logf            func(format string, args ...any)
+	Sources           []string
+	DestinationRoot   string
+	DryRun            bool
+	ReportPath        string
+	MaxArchiveDepth   int
+	EnabledCategories []string // if empty, all categories are included
+	Logf              func(format string, args ...any)
 }
 
 type Report struct {

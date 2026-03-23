@@ -43,11 +43,23 @@ func Run(cfg Config) (Report, error) {
 		}
 	}
 
+	// Load existing manifest from destination for cross-source deduplication
+	manifest, err := LoadManifest(cfg.DestinationRoot)
+	if err != nil {
+		return report, fmt.Errorf("load manifest: %w", err)
+	}
+	cfg.Logf("Loaded manifest with %d known hashes", len(manifest.Hashes))
+
 	tempRoot, err := os.MkdirTemp("", "archive-images-work-")
 	if err != nil {
 		return report, fmt.Errorf("create temp root: %w", err)
 	}
 	defer os.RemoveAll(tempRoot)
+
+	enabledCats := map[string]bool{}
+	for _, c := range cfg.EnabledCategories {
+		enabledCats[c] = true
+	}
 
 	hashes := map[string]string{}
 	destinations := map[string]struct{}{}
@@ -106,6 +118,14 @@ func Run(cfg Config) (Report, error) {
 				reportFailure(&report, fmt.Sprintf("hash %s: %v", path, err))
 				return nil
 			}
+			
+			// Check against manifest (from previous runs or other sources)
+			if _, inManifest := manifest.Hashes[hash]; inManifest {
+				report.SkippedDuplicates++
+				return nil
+			}
+			
+			// Check against current run's hashes
 			if _, seen := hashes[hash]; seen {
 				report.SkippedDuplicates++
 				return nil
@@ -113,6 +133,9 @@ func Run(cfg Config) (Report, error) {
 			hashes[hash] = path
 
 			category := classify.CategoryFor(path)
+			if len(enabledCats) > 0 && !enabledCats[category] {
+				return nil
+			}
 			report.ByCategory[category]++
 
 			destinationPath, err := uniqueDestinationPath(cfg.DestinationRoot, category, filepath.Base(path), destinations)
@@ -123,6 +146,8 @@ func Run(cfg Config) (Report, error) {
 
 			if cfg.DryRun {
 				cfg.Logf("[DRY-RUN] COPY %s -> %s", path, destinationPath)
+				// In dry-run, also record in manifest to support resumability
+				manifest.Hashes[hash] = destinationPath
 				report.CopiedFiles++
 				return nil
 			}
@@ -136,6 +161,8 @@ func Run(cfg Config) (Report, error) {
 				return nil
 			}
 
+			// Record in manifest after successful copy
+			manifest.Hashes[hash] = destinationPath
 			report.CopiedFiles++
 			cfg.Logf("COPY %s -> %s", path, destinationPath)
 			return nil
@@ -149,6 +176,14 @@ func Run(cfg Config) (Report, error) {
 		if err := writeReport(cfg.ReportPath, report); err != nil {
 			return report, fmt.Errorf("write report: %w", err)
 		}
+	}
+
+	// Save manifest for resumability and cross-source deduplication
+	if !cfg.DryRun {
+		if err := SaveManifest(cfg.DestinationRoot, manifest); err != nil {
+			return report, fmt.Errorf("save manifest: %w", err)
+		}
+		cfg.Logf("Manifest saved with %d hashes", len(manifest.Hashes))
 	}
 
 	return report, nil
