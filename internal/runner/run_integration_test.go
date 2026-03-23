@@ -97,6 +97,11 @@ func TestRun_Integration_NestedArchivesAndDuplicates(t *testing.T) {
 	if picCount != 2 {
 		t.Fatalf("expected 2 files in destination Pictures, got %d", picCount)
 	}
+
+	assertFileExists(t, filepath.Join(destination, "Documents", "source", "docs", "a.txt"))
+	assertFileExists(t, filepath.Join(destination, "Pictures", "source", "images", "photo.jpg"))
+	assertFileExists(t, filepath.Join(destination, "Pictures", "source", "outer.zip", "nested", "pic.png"))
+	assertFileExists(t, filepath.Join(destination, "Documents", "source", "outer.zip", "nested", "inner.zip", "inner", "doc2.txt"))
 }
 
 func zipBytes(entries map[string][]byte) ([]byte, error) {
@@ -128,16 +133,22 @@ func writeZipFile(path string, entries map[string][]byte) error {
 }
 
 func countFilesInDir(path string) int {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return 0
-	}
 	count := 0
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	_ = filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-		count++
-	}
+		if !d.IsDir() {
+			count++
+		}
+		return nil
+	})
 	return count
+}
+
+func assertFileExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected file to exist: %s (%v)", path, err)
+	}
 }

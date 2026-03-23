@@ -18,8 +18,9 @@ import (
 )
 
 type walkerItem struct {
-	Root  string
-	Depth int
+	Root       string
+	Depth      int
+	DestPrefix string
 }
 
 func Run(cfg Config) (Report, error) {
@@ -66,7 +67,11 @@ func Run(cfg Config) (Report, error) {
 
 	queue := make([]walkerItem, 0, len(cfg.Sources))
 	for _, source := range cfg.Sources {
-		queue = append(queue, walkerItem{Root: source, Depth: 0})
+		queue = append(queue, walkerItem{
+			Root:       source,
+			Depth:      0,
+			DestPrefix: sourcePrefix(source),
+		})
 	}
 
 	for len(queue) > 0 {
@@ -100,8 +105,17 @@ func Run(cfg Config) (Report, error) {
 						reportFailure(&report, fmt.Sprintf("extract %s: %v", path, err))
 						return nil
 					}
+					archivePrefix, err := relativeDestinationPath(item.Root, item.DestPrefix, path)
+					if err != nil {
+						reportFailure(&report, fmt.Sprintf("plan archive prefix %s: %v", path, err))
+						return nil
+					}
 					report.ArchivesExtracted++
-					queue = append(queue, walkerItem{Root: extractTo, Depth: item.Depth + 1})
+					queue = append(queue, walkerItem{
+						Root:       extractTo,
+						Depth:      item.Depth + 1,
+						DestPrefix: archivePrefix,
+					})
 				} else {
 					report.UnsupportedArchive++
 				}
@@ -138,7 +152,13 @@ func Run(cfg Config) (Report, error) {
 			}
 			report.ByCategory[category]++
 
-			destinationPath, err := uniqueDestinationPath(cfg.DestinationRoot, category, filepath.Base(path), destinations)
+			relPath, err := relativeDestinationPath(item.Root, item.DestPrefix, path)
+			if err != nil {
+				reportFailure(&report, fmt.Sprintf("plan relative path %s: %v", path, err))
+				return nil
+			}
+
+			destinationPath, err := uniqueDestinationPath(cfg.DestinationRoot, category, relPath, destinations)
 			if err != nil {
 				reportFailure(&report, fmt.Sprintf("plan destination %s: %v", path, err))
 				return nil
@@ -227,20 +247,50 @@ func copyFile(source, destination string) error {
 	return out.Sync()
 }
 
-func uniqueDestinationPath(root, category, base string, planned map[string]struct{}) (string, error) {
-	if base == "" || base == "." || base == string(filepath.Separator) {
+func sourcePrefix(source string) string {
+	base := filepath.Base(filepath.Clean(source))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return "source"
+	}
+	return base
+}
+
+func relativeDestinationPath(root, prefix, path string) (string, error) {
+	relPath, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", err
+	}
+	relPath = filepath.Clean(relPath)
+	if relPath == "." || relPath == "" || strings.HasPrefix(relPath, "..") {
+		return "", errors.New("invalid relative path")
+	}
+	if prefix == "" {
+		return relPath, nil
+	}
+	return filepath.Join(prefix, relPath), nil
+}
+
+func uniqueDestinationPath(root, category, relativePath string, planned map[string]struct{}) (string, error) {
+	if relativePath == "" || relativePath == "." || relativePath == string(filepath.Separator) {
 		return "", errors.New("invalid file name")
 	}
 
+	relPath := filepath.Clean(relativePath)
+	if filepath.IsAbs(relPath) || strings.HasPrefix(relPath, "..") {
+		return "", errors.New("invalid relative path")
+	}
+
 	categoryDir := filepath.Join(root, category)
-	candidate := filepath.Join(categoryDir, base)
+	candidate := filepath.Join(categoryDir, relPath)
+	candidateDir := filepath.Dir(candidate)
+	base := filepath.Base(candidate)
 
 	for i := 0; ; i++ {
 		path := candidate
 		if i > 0 {
 			ext := filepath.Ext(base)
 			name := strings.TrimSuffix(base, ext)
-			path = filepath.Join(categoryDir, fmt.Sprintf("%s_%d%s", name, i, ext))
+			path = filepath.Join(candidateDir, fmt.Sprintf("%s_%d%s", name, i, ext))
 		}
 
 		if _, exists := planned[path]; exists {

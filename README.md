@@ -8,6 +8,7 @@ Reusable Go CLI for reorganizing mixed backup files into personal-data categorie
 - Program/download exclusion using extension and folder heuristics
 - Embedded media in music folders (like AlbumArtSmall.jpg) classified as `Other` instead of `Pictures`
 - Category mapping: Documents, Pictures, Videos, Music, Other
+- Files keep their original source subfolder structure inside each category so context is not lost
 - Duplicate detection using MD5 (keep first, skip later duplicates)
 - Archive extraction and recursion for: **zip, tar, tar.gz, tgz, rar**
 - Cross-source deduplication: same destination with different sources automatically handles already-copied files
@@ -116,11 +117,19 @@ Multiple values are comma-separated. Omitting the flag includes **all** categori
 ```
 <dest>/
   Documents/
+    <source-name>/
+      docs/
+      outer.zip/
   Pictures/
+    <source-name>/
+      holiday/
+      albums/
   Videos/
   Music/
   Other/
 ```
+
+The tool preserves the folder layout from the source below each category directory. For example, a file like `backup/camera/2020/beach.jpg` becomes `Pictures/backup/camera/2020/beach.jpg`. Files extracted from archives also keep the archive path in the destination, for example `Pictures/backup/photos.zip/trips/beach.jpg`.
 
 Files that are duplicates (same MD5) or identified as programs/installers are skipped and counted in the summary line printed at the end.
 

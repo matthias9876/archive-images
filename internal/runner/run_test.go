@@ -10,7 +10,7 @@ func TestUniqueDestinationPath(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	categoryDir := filepath.Join(root, "Documents")
+	categoryDir := filepath.Join(root, "Documents", "backup", "docs")
 	if err := os.MkdirAll(categoryDir, 0o755); err != nil {
 		t.Fatalf("mkdir category: %v", err)
 	}
@@ -22,15 +22,18 @@ func TestUniqueDestinationPath(t *testing.T) {
 
 	planned := map[string]struct{}{}
 
-	first, err := uniqueDestinationPath(root, "Documents", "report.txt", planned)
+	first, err := uniqueDestinationPath(root, "Documents", filepath.Join("backup", "docs", "report.txt"), planned)
 	if err != nil {
 		t.Fatalf("first unique path: %v", err)
 	}
 	if filepath.Base(first) != "report_1.txt" {
 		t.Fatalf("expected report_1.txt, got %s", filepath.Base(first))
 	}
+	if filepath.Dir(first) != categoryDir {
+		t.Fatalf("expected preserved directory %s, got %s", categoryDir, filepath.Dir(first))
+	}
 
-	second, err := uniqueDestinationPath(root, "Documents", "report.txt", planned)
+	second, err := uniqueDestinationPath(root, "Documents", filepath.Join("backup", "docs", "report.txt"), planned)
 	if err != nil {
 		t.Fatalf("second unique path: %v", err)
 	}
@@ -45,6 +48,20 @@ func TestUniqueDestinationPathRejectsInvalidBase(t *testing.T) {
 	_, err := uniqueDestinationPath(t.TempDir(), "Other", "", map[string]struct{}{})
 	if err == nil {
 		t.Fatal("expected invalid base name error")
+	}
+}
+
+func TestRelativeDestinationPath(t *testing.T) {
+	t.Parallel()
+
+	got, err := relativeDestinationPath("/data/source", "source", "/data/source/photos/trip/pic.jpg")
+	if err != nil {
+		t.Fatalf("relativeDestinationPath: %v", err)
+	}
+
+	want := filepath.Join("source", "photos", "trip", "pic.jpg")
+	if got != want {
+		t.Fatalf("relativeDestinationPath() = %q, want %q", got, want)
 	}
 }
 
