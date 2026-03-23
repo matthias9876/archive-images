@@ -46,11 +46,13 @@ jobs:
           go-version: '1.21'
 
       - name: Build
-        run: go build -o ${{ matrix.artifact }} ./cmd/archive-images
+        run: |
+          OUTPUT_FILE=${{ matrix.artifact }}
+          go build -o "$OUTPUT_FILE" ./cmd/archive-images
+          ls -lh "$OUTPUT_FILE"
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
-        shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
