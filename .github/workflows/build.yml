@@ -37,6 +37,10 @@ jobs:
             arch: amd64
             runner: windows-latest
             artifact: archive-images-windows-amd64.exe
+          - os: windows
+            arch: arm64
+            runner: windows-latest
+            artifact: archive-images-windows-arm64.exe
 
     steps:
       - uses: actions/checkout@v4
