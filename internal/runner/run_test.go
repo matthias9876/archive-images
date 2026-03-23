@@ -65,7 +65,7 @@ func TestRelativeDestinationPath(t *testing.T) {
 	}
 }
 
-func TestFileMD5(t *testing.T) {
+func TestHashOnly(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -74,9 +74,10 @@ func TestFileMD5(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	sum, err := fileMD5(path)
+	buf := make([]byte, copyBufSize)
+	sum, err := hashOnly(path, buf)
 	if err != nil {
-		t.Fatalf("fileMD5: %v", err)
+		t.Fatalf("hashOnly: %v", err)
 	}
 	if sum != "900150983cd24fb0d6963f7d28e17f72" {
 		t.Fatalf("unexpected md5: %s", sum)

@@ -62,6 +62,10 @@ func Run(cfg Config) (Report, error) {
 		enabledCats[c] = true
 	}
 
+	// Single buffer reused across all file operations to avoid GC pressure and
+	// to ensure every read issues large sequential requests to the HDD.
+	ioBuf := make([]byte, copyBufSize)
+
 	hashes := map[string]string{}
 	destinations := map[string]struct{}{}
 
@@ -127,30 +131,12 @@ func Run(cfg Config) (Report, error) {
 				return nil
 			}
 
-			hash, err := fileMD5(path)
-			if err != nil {
-				reportFailure(&report, fmt.Sprintf("hash %s: %v", path, err))
-				return nil
-			}
-			
-			// Check against manifest (from previous runs or other sources)
-			if _, inManifest := manifest.Hashes[hash]; inManifest {
-				report.SkippedDuplicates++
-				return nil
-			}
-			
-			// Check against current run's hashes
-			if _, seen := hashes[hash]; seen {
-				report.SkippedDuplicates++
-				return nil
-			}
-			hashes[hash] = path
-
+			// Classify and filter by category before any disk I/O so
+			// unwanted categories are skipped without reading the file.
 			category := classify.CategoryFor(path)
 			if len(enabledCats) > 0 && !enabledCats[category] {
 				return nil
 			}
-			report.ByCategory[category]++
 
 			relPath, err := relativeDestinationPath(item.Root, item.DestPrefix, path)
 			if err != nil {
@@ -165,24 +151,75 @@ func Run(cfg Config) (Report, error) {
 			}
 
 			if cfg.DryRun {
-				cfg.Logf("[DRY-RUN] COPY %s -> %s", path, destinationPath)
-				// In dry-run, also record in manifest to support resumability
+				// Dry-run: hash only (single read, no write).
+				hash, err := hashOnly(path, ioBuf)
+				if err != nil {
+					delete(destinations, destinationPath)
+					reportFailure(&report, fmt.Sprintf("hash %s: %v", path, err))
+					return nil
+				}
+				if _, inManifest := manifest.Hashes[hash]; inManifest {
+					delete(destinations, destinationPath)
+					report.SkippedDuplicates++
+					return nil
+				}
+				if _, seen := hashes[hash]; seen {
+					delete(destinations, destinationPath)
+					report.SkippedDuplicates++
+					return nil
+				}
+				hashes[hash] = path
 				manifest.Hashes[hash] = destinationPath
+				cfg.Logf("[DRY-RUN] COPY %s -> %s", path, destinationPath)
+				report.ByCategory[category]++
 				report.CopiedFiles++
 				return nil
 			}
 
+			// Real copy: single sequential read from the source drive.
+			// hashAndCopy computes the MD5 while writing via io.TeeReader so
+			// the file is only read once, halving the I/O cost on an HDD.
 			if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+				delete(destinations, destinationPath)
 				reportFailure(&report, fmt.Sprintf("mkdir %s: %v", filepath.Dir(destinationPath), err))
 				return nil
 			}
-			if err := copyFile(path, destinationPath); err != nil {
-				reportFailure(&report, fmt.Sprintf("copy %s -> %s: %v", path, destinationPath, err))
+			tmpPath := destinationPath + ".tmp"
+			hash, err := hashAndCopy(path, tmpPath, ioBuf)
+			if err != nil {
+				os.Remove(tmpPath)
+				delete(destinations, destinationPath)
+				reportFailure(&report, fmt.Sprintf("copy %s: %v", path, err))
 				return nil
 			}
 
-			// Record in manifest after successful copy
+			// Deduplication check after the copy.  Files already known from
+			// the manifest (previous runs) or seen earlier in this run are
+			// discarded.  The temp file is removed so no duplicate ever lands
+			// in the destination tree.
+			if _, inManifest := manifest.Hashes[hash]; inManifest {
+				os.Remove(tmpPath)
+				delete(destinations, destinationPath)
+				report.SkippedDuplicates++
+				return nil
+			}
+			if _, seen := hashes[hash]; seen {
+				os.Remove(tmpPath)
+				delete(destinations, destinationPath)
+				report.SkippedDuplicates++
+				return nil
+			}
+			hashes[hash] = path
+
+			if err := os.Rename(tmpPath, destinationPath); err != nil {
+				os.Remove(tmpPath)
+				delete(destinations, destinationPath)
+				reportFailure(&report, fmt.Sprintf("rename %s: %v", tmpPath, err))
+				return nil
+			}
+
 			manifest.Hashes[hash] = destinationPath
+			report.ByCategory[category]++
 			report.CopiedFiles++
 			cfg.Logf("COPY %s -> %s", path, destinationPath)
 			return nil
@@ -214,7 +251,14 @@ func reportFailure(report *Report, msg string) {
 	report.Errors = append(report.Errors, msg)
 }
 
-func fileMD5(path string) (string, error) {
+// copyBufSize is the I/O buffer size used for all file reads and writes.
+// 4 MiB amortises HDD rotational latency by keeping the drive streaming
+// sequentially rather than issuing many small requests.
+const copyBufSize = 4 << 20 // 4 MiB
+
+// hashOnly reads path and returns its MD5 hex string. Used in dry-run mode
+// where no destination file is written.
+func hashOnly(path string, buf []byte) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -222,29 +266,38 @@ func fileMD5(path string) (string, error) {
 	defer f.Close()
 
 	h := md5.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.CopyBuffer(h, f, buf); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func copyFile(source, destination string) error {
-	in, err := os.Open(source)
+// hashAndCopy reads source once, writing to destination while computing the
+// MD5 hash in parallel via io.TeeReader. This avoids a second seek-and-read
+// pass over the spinning source drive. No Sync is called so the OS can
+// pipeline destination writes through its write-back cache.
+func hashAndCopy(source, destination string, buf []byte) (hash string, err error) {
+	src, err := os.Open(source)
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer in.Close()
+	defer src.Close()
 
-	out, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	dst, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer out.Close()
+	defer func() {
+		if cerr := dst.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
-	if _, err := io.Copy(out, in); err != nil {
-		return err
+	h := md5.New()
+	if _, err = io.CopyBuffer(dst, io.TeeReader(src, h), buf); err != nil {
+		return "", err
 	}
-	return out.Sync()
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func sourcePrefix(source string) string {
