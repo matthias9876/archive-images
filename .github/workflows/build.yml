@@ -76,8 +76,17 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release
-          find binaries -type f -exec cp {} release/ \;
-          ls -la release/
+          # Each artifact is in its own subdirectory, so we need to flatten them
+          for dir in binaries/*/; do
+            if [ -d "$dir" ]; then
+              for file in "$dir"*; do
+                if [ -f "$file" ]; then
+                  cp "$file" release/
+                fi
+              done
+            fi
+          done
+          ls -lah release/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
