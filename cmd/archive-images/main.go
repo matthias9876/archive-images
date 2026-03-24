@@ -17,6 +17,7 @@ func main() {
 	var reportPath string
 	var maxArchiveDepth int
 	var categoriesCSV string
+	var debug bool
 
 	flag.StringVar(&sourceCSV, "sources", "", "Comma-separated source directories to scan")
 	flag.StringVar(&destination, "dest", "", "Destination directory (e.g. mounted USB path)")
@@ -24,6 +25,7 @@ func main() {
 	flag.StringVar(&reportPath, "report", "", "Optional path for JSON report output")
 	flag.IntVar(&maxArchiveDepth, "max-archive-depth", 5, "Maximum nested archive extraction depth")
 	flag.StringVar(&categoriesCSV, "categories", "", "Comma-separated categories to include: pictures, movies, documents, sound, other (default: all)")
+	flag.BoolVar(&debug, "debug", false, "Print verbose debug output (directories entered, archives, skips, duplicates)")
 	flag.Parse()
 
 	sources := splitSources(sourceCSV)
@@ -50,6 +52,9 @@ func main() {
 		MaxArchiveDepth:   maxArchiveDepth,
 		EnabledCategories: enabledCategories,
 		Logf:              func(format string, args ...any) { fmt.Printf(format+"\n", args...) },
+	}
+	if debug {
+		cfg.Debugf = func(format string, args ...any) { fmt.Printf("[DEBUG] "+format+"\n", args...) }
 	}
 
 	report, err := runner.Run(cfg)

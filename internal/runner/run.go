@@ -33,6 +33,9 @@ func Run(cfg Config) (Report, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
+	if cfg.Debugf == nil {
+		cfg.Debugf = func(string, ...any) {}
+	}
 
 	if cfg.MaxArchiveDepth < 0 {
 		return report, errors.New("max archive depth must be >= 0")
@@ -82,12 +85,15 @@ func Run(cfg Config) (Report, error) {
 		item := queue[0]
 		queue = queue[1:]
 
+		cfg.Debugf("scanning %s (archive depth=%d, prefix=%s, queue remaining=%d)", item.Root, item.Depth, item.DestPrefix, len(queue))
+
 		err := filepath.WalkDir(item.Root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				reportFailure(&report, fmt.Sprintf("walk error at %s: %v", path, walkErr))
 				return nil
 			}
 			if d.IsDir() {
+				cfg.Debugf("entering dir %s", path)
 				return nil
 			}
 
@@ -96,6 +102,7 @@ func Run(cfg Config) (Report, error) {
 				report.ArchivesProcessed++
 				if archive.IsSupportedArchive(path) {
 					if item.Depth >= cfg.MaxArchiveDepth {
+						cfg.Debugf("archive depth limit (%d) reached, skipping: %s", cfg.MaxArchiveDepth, path)
 						reportFailure(&report, fmt.Sprintf("archive depth limit reached: %s", path))
 						return nil
 					}
@@ -105,6 +112,7 @@ func Run(cfg Config) (Report, error) {
 						reportFailure(&report, fmt.Sprintf("create extract temp for %s: %v", path, err))
 						return nil
 					}
+					cfg.Debugf("extracting %s -> %s", path, extractTo)
 					if err := archive.Extract(path, extractTo); err != nil {
 						reportFailure(&report, fmt.Sprintf("extract %s: %v", path, err))
 						return nil
@@ -120,13 +128,16 @@ func Run(cfg Config) (Report, error) {
 						Depth:      item.Depth + 1,
 						DestPrefix: archivePrefix,
 					})
+					cfg.Debugf("extracted %s -> enqueued (archive depth=%d, queue size=%d)", path, item.Depth+1, len(queue))
 				} else {
+					cfg.Debugf("unsupported archive format, skipping: %s", path)
 					report.UnsupportedArchive++
 				}
 				return nil
 			}
 
 			if filter.IsLikelyProgram(path) {
+				cfg.Debugf("skipping program: %s", path)
 				report.SkippedPrograms++
 				return nil
 			}
@@ -135,6 +146,7 @@ func Run(cfg Config) (Report, error) {
 			// unwanted categories are skipped without reading the file.
 			category := classify.CategoryFor(path)
 			if len(enabledCats) > 0 && !enabledCats[category] {
+				cfg.Debugf("skipping (category %s not in filter): %s", category, path)
 				return nil
 			}
 
@@ -152,6 +164,7 @@ func Run(cfg Config) (Report, error) {
 
 			if cfg.DryRun {
 				// Dry-run: hash only (single read, no write).
+				cfg.Debugf("hashing %s", path)
 				hash, err := hashOnly(path, ioBuf)
 				if err != nil {
 					delete(destinations, destinationPath)
@@ -159,11 +172,13 @@ func Run(cfg Config) (Report, error) {
 					return nil
 				}
 				if _, inManifest := manifest.Hashes[hash]; inManifest {
+					cfg.Debugf("duplicate (manifest, hash=%s): %s", hash, path)
 					delete(destinations, destinationPath)
 					report.SkippedDuplicates++
 					return nil
 				}
 				if _, seen := hashes[hash]; seen {
+					cfg.Debugf("duplicate (in-run, hash=%s): %s", hash, path)
 					delete(destinations, destinationPath)
 					report.SkippedDuplicates++
 					return nil
@@ -179,6 +194,7 @@ func Run(cfg Config) (Report, error) {
 			// Real copy: single sequential read from the source drive.
 			// hashAndCopy computes the MD5 while writing via io.TeeReader so
 			// the file is only read once, halving the I/O cost on an HDD.
+			cfg.Debugf("copying %s -> %s", path, destinationPath)
 			if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
 				delete(destinations, destinationPath)
 				reportFailure(&report, fmt.Sprintf("mkdir %s: %v", filepath.Dir(destinationPath), err))
@@ -198,12 +214,14 @@ func Run(cfg Config) (Report, error) {
 			// discarded.  The temp file is removed so no duplicate ever lands
 			// in the destination tree.
 			if _, inManifest := manifest.Hashes[hash]; inManifest {
+				cfg.Debugf("duplicate (manifest, hash=%s): %s", hash, path)
 				os.Remove(tmpPath)
 				delete(destinations, destinationPath)
 				report.SkippedDuplicates++
 				return nil
 			}
 			if _, seen := hashes[hash]; seen {
+				cfg.Debugf("duplicate (in-run, hash=%s): %s", hash, path)
 				os.Remove(tmpPath)
 				delete(destinations, destinationPath)
 				report.SkippedDuplicates++

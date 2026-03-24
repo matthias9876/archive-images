@@ -8,6 +8,7 @@ type Config struct {
 	MaxArchiveDepth   int
 	EnabledCategories []string // if empty, all categories are included
 	Logf              func(format string, args ...any)
+	Debugf            func(format string, args ...any) // nil disables debug output
 }
 
 type Report struct {
