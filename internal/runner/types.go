@@ -12,7 +12,8 @@ type Config struct {
 }
 
 type Report struct {
-	DryRun bool `json:"dryRun"`
+	DryRun    bool   `json:"dryRun"`
+	RunFolder string `json:"runFolder"`
 
 	TotalFilesSeen     int `json:"totalFilesSeen"`
 	CopiedFiles        int `json:"copiedFiles"`

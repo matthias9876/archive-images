@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,23 +86,48 @@ func TestRun_Integration_NestedArchivesAndDuplicates(t *testing.T) {
 	if report.ByCategory["Documents"] != 3 {
 		t.Fatalf("expected 3 documents copied, got %d", report.ByCategory["Documents"])
 	}
-	if report.ByCategory["Pictures"] != 2 {
-		t.Fatalf("expected 2 pictures copied, got %d", report.ByCategory["Pictures"])
+	if report.ByCategory["Photos"] != 1 {
+		t.Fatalf("expected 1 photo copied, got %d", report.ByCategory["Photos"])
+	}
+	if report.ByCategory["Pictures"] != 1 {
+		t.Fatalf("expected 1 picture copied, got %d", report.ByCategory["Pictures"])
 	}
 
-	docCount := countFilesInDir(filepath.Join(destination, "Documents"))
-	picCount := countFilesInDir(filepath.Join(destination, "Pictures"))
+	runFolder := report.RunFolder
+	docCount := countFilesInDir(filepath.Join(runFolder, "Documents"))
+	photoCount := countFilesInDir(filepath.Join(runFolder, "Photos"))
+	picCount := countFilesInDir(filepath.Join(runFolder, "Pictures"))
 	if docCount != 3 {
 		t.Fatalf("expected 3 files in destination Documents, got %d", docCount)
 	}
-	if picCount != 2 {
-		t.Fatalf("expected 2 files in destination Pictures, got %d", picCount)
+	if photoCount != 1 {
+		t.Fatalf("expected 1 file in destination Photos, got %d", photoCount)
+	}
+	if picCount != 1 {
+		t.Fatalf("expected 1 file in destination Pictures, got %d", picCount)
 	}
 
-	assertFileExists(t, filepath.Join(destination, "Documents", "source", "docs", "a.txt"))
-	assertFileExists(t, filepath.Join(destination, "Pictures", "source", "images", "photo.jpg"))
-	assertFileExists(t, filepath.Join(destination, "Pictures", "source", "outer.zip", "nested", "pic.png"))
-	assertFileExists(t, filepath.Join(destination, "Documents", "source", "outer.zip", "nested", "inner.zip", "inner", "doc2.txt"))
+	assertFileExists(t, filepath.Join(runFolder, "Documents", "source", "docs", "a.txt"))
+	assertFileExists(t, filepath.Join(runFolder, "Photos", "source", "images", "photo.jpg"))
+	assertFileExists(t, filepath.Join(runFolder, "Pictures", "source", "outer.zip", "nested", "pic.png"))
+	assertFileExists(t, filepath.Join(runFolder, "Documents", "source", "outer.zip", "nested", "inner.zip", "inner", "doc2.txt"))
+
+	// The run log must exist and contain duplicate and stats entries.
+	logPath := filepath.Join(runFolder, "run.log")
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected run.log at %s: %v", logPath, err)
+	}
+	logContent := string(logBytes)
+	if !strings.Contains(logContent, "[DUPLICATE]") {
+		t.Fatalf("expected run.log to contain [DUPLICATE] entry; got:\n%s", logContent)
+	}
+	if !strings.Contains(logContent, "[ARCHIVE]") {
+		t.Fatalf("expected run.log to contain [ARCHIVE] entry; got:\n%s", logContent)
+	}
+	if !strings.Contains(logContent, "=== RUN STATS ===") {
+		t.Fatalf("expected run.log to contain RUN STATS section; got:\n%s", logContent)
+	}
 }
 
 func zipBytes(entries map[string][]byte) ([]byte, error) {

@@ -6,8 +6,9 @@ Reusable Go CLI for reorganizing mixed backup files into personal-data categorie
 
 - Recursive scan of one or more source folders
 - Program/download exclusion using extension and folder heuristics
+- Excludes common Windows system folders (for example `$Recycle.Bin`, `AppData`, `cache`, `Program Files`) while keeping `Wiso Steuer` paths included
 - Embedded media in music folders (like AlbumArtSmall.jpg) classified as `Other` instead of `Pictures`
-- Category mapping: Documents, Pictures, Videos, Music, Other
+- Category mapping: Documents, Photos (JPG/JPEG), Pictures (other image formats), Videos, Music, Other
 - Files keep their original source subfolder structure inside each category so context is not lost
 - Duplicate detection using MD5 (keep first, skip later duplicates)
 - Archive extraction and recursion for: **zip, tar, tar.gz, tgz, rar**
@@ -54,7 +55,8 @@ GitHub will build the binaries and create a release with downloadable artifacts 
 
 | Value(s) | Destination folder |
 |---|---|
-| `pictures`, `photos` | `Pictures/` |
+| `photos`, `photo`, `jpg`, `jpeg` | `Photos/` |
+| `pictures`, `picture` | `Photos/` and `Pictures/` |
 | `movies`, `videos` | `Videos/` |
 | `documents`, `docs` | `Documents/` |
 | `sound`, `music`, `audio` | `Music/` |
@@ -120,16 +122,19 @@ Multiple values are comma-separated. Omitting the flag includes **all** categori
     <source-name>/
       docs/
       outer.zip/
+  Photos/
+    <source-name>/
+      camera/
   Pictures/
     <source-name>/
-      holiday/
-      albums/
+      screenshots/
+      artwork/
   Videos/
   Music/
   Other/
 ```
 
-The tool preserves the folder layout from the source below each category directory. For example, a file like `backup/camera/2020/beach.jpg` becomes `Pictures/backup/camera/2020/beach.jpg`. Files extracted from archives also keep the archive path in the destination, for example `Pictures/backup/photos.zip/trips/beach.jpg`.
+The tool preserves the folder layout from the source below each category directory. For example, a file like `backup/camera/2020/beach.jpg` becomes `Photos/backup/camera/2020/beach.jpg`, while `backup/screenshots/app.png` becomes `Pictures/backup/screenshots/app.png`. Files extracted from archives also keep the archive path in the destination, for example `Pictures/backup/photos.zip/trips/map.png`.
 
 Files that are duplicates (same MD5) or identified as programs/installers are skipped and counted in the summary line printed at the end.
 

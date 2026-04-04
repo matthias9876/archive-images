@@ -1,0 +1,5 @@
+sudo mount -t cifs //mybooklive.local/matthias /mnt/mybookmt -o username=matthias,password=ptl773,vers=1.0
+sudo mount -t cifs //mybooklive.local/Public /mnt/mybook -o guest,vers=1.0
+
+# PC Dach
+sudo mount -t ntfs-3g -o ro /dev/nvme0n1p3 /mnt/win

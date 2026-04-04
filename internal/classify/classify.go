@@ -7,6 +7,7 @@ import (
 
 const (
 	CategoryDocuments = "Documents"
+	CategoryPhotos    = "Photos"
 	CategoryPictures  = "Pictures"
 	CategoryVideos    = "Videos"
 	CategoryMusic     = "Music"
@@ -35,7 +36,15 @@ func isInMusicFolder(path string) bool {
 }
 
 func CategoryFor(path string) string {
+	normalized := strings.ToLower(filepath.ToSlash(path))
 	ext := strings.ToLower(filepath.Ext(path))
+
+	// WISO tax project and backup files often use custom suffixes like
+	// .steuer2024 or .eur2023 (including autosave variants). Keep these in
+	// Documents so tax data is easy to find with regular statement PDFs.
+	if strings.Contains(normalized, ".steuer") || strings.Contains(normalized, ".eur") {
+		return CategoryDocuments
+	}
 
 	// Check for embedded pictures in music folders
 	if isInMusicFolder(path) {
@@ -46,9 +55,11 @@ func CategoryFor(path string) string {
 	}
 
 	switch ext {
-	case ".txt", ".md", ".rtf", ".doc", ".docx", ".pdf", ".odt", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".json", ".xml":
+	case ".txt", ".md", ".rtf", ".doc", ".docx", ".pdf", ".odt", ".xls", ".xlsx", ".ppt", ".pptx", ".csv":
 		return CategoryDocuments
-	case ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".heic", ".raw", ".svg":
+	case ".jpg", ".jpeg":
+		return CategoryPhotos
+	case ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".heic", ".raw", ".svg":
 		return CategoryPictures
 	case ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".flv", ".webm":
 		return CategoryVideos

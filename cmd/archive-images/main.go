@@ -24,7 +24,7 @@ func main() {
 	flag.BoolVar(&dryRun, "dry-run", true, "If true, only print planned actions without copying")
 	flag.StringVar(&reportPath, "report", "", "Optional path for JSON report output")
 	flag.IntVar(&maxArchiveDepth, "max-archive-depth", 5, "Maximum nested archive extraction depth")
-	flag.StringVar(&categoriesCSV, "categories", "", "Comma-separated categories to include: pictures, movies, documents, sound, other (default: all)")
+	flag.StringVar(&categoriesCSV, "categories", "", "Comma-separated categories to include: photos, pictures, movies, documents, sound, other (default: all)")
 	flag.BoolVar(&debug, "debug", false, "Print verbose debug output (directories entered, archives, skips, duplicates)")
 	flag.Parse()
 
@@ -63,7 +63,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("done: files=%d copied=%d duplicates=%d skipped_program=%d archives=%d failures=%d dry_run=%t\n",
+	fmt.Printf("done: files=%d copied=%d duplicates=%d skipped_program=%d archives=%d failures=%d dry_run=%t run_folder=%s\n",
 		report.TotalFilesSeen,
 		report.CopiedFiles,
 		report.SkippedDuplicates,
@@ -71,6 +71,7 @@ func main() {
 		report.ArchivesProcessed,
 		report.Failures,
 		report.DryRun,
+		report.RunFolder,
 	)
 }
 
@@ -80,24 +81,27 @@ func parseCategories(csv string) ([]string, error) {
 	if strings.TrimSpace(csv) == "" {
 		return nil, nil
 	}
-	aliases := map[string]string{
-		"pictures":  classify.CategoryPictures,
-		"picture":   classify.CategoryPictures,
-		"photos":    classify.CategoryPictures,
-		"photo":     classify.CategoryPictures,
-		"movies":    classify.CategoryVideos,
-		"movie":     classify.CategoryVideos,
-		"videos":    classify.CategoryVideos,
-		"video":     classify.CategoryVideos,
-		"documents": classify.CategoryDocuments,
-		"document":  classify.CategoryDocuments,
-		"docs":      classify.CategoryDocuments,
-		"doc":       classify.CategoryDocuments,
-		"sound":     classify.CategoryMusic,
-		"sounds":    classify.CategoryMusic,
-		"music":     classify.CategoryMusic,
-		"audio":     classify.CategoryMusic,
-		"other":     classify.CategoryOther,
+	aliases := map[string][]string{
+		// Backward compatible: "pictures" includes both real photos and other images.
+		"pictures":  {classify.CategoryPhotos, classify.CategoryPictures},
+		"picture":   {classify.CategoryPhotos, classify.CategoryPictures},
+		"photos":    {classify.CategoryPhotos},
+		"photo":     {classify.CategoryPhotos},
+		"jpg":       {classify.CategoryPhotos},
+		"jpeg":      {classify.CategoryPhotos},
+		"movies":    {classify.CategoryVideos},
+		"movie":     {classify.CategoryVideos},
+		"videos":    {classify.CategoryVideos},
+		"video":     {classify.CategoryVideos},
+		"documents": {classify.CategoryDocuments},
+		"document":  {classify.CategoryDocuments},
+		"docs":      {classify.CategoryDocuments},
+		"doc":       {classify.CategoryDocuments},
+		"sound":     {classify.CategoryMusic},
+		"sounds":    {classify.CategoryMusic},
+		"music":     {classify.CategoryMusic},
+		"audio":     {classify.CategoryMusic},
+		"other":     {classify.CategoryOther},
 	}
 
 	seen := map[string]struct{}{}
@@ -107,13 +111,15 @@ func parseCategories(csv string) ([]string, error) {
 		if p == "" {
 			continue
 		}
-		cat, ok := aliases[strings.ToLower(p)]
+		cats, ok := aliases[strings.ToLower(p)]
 		if !ok {
-			return nil, fmt.Errorf("unknown category %q; valid values: pictures, movies, documents, sound, other", p)
+			return nil, fmt.Errorf("unknown category %q; valid values: photos, pictures, movies, documents, sound, other", p)
 		}
-		if _, exists := seen[cat]; !exists {
-			seen[cat] = struct{}{}
-			result = append(result, cat)
+		for _, cat := range cats {
+			if _, exists := seen[cat]; !exists {
+				seen[cat] = struct{}{}
+				result = append(result, cat)
+			}
 		}
 	}
 	return result, nil

@@ -1,3 +1,57 @@
+// Package runner executes the end-to-end archive-images pipeline.
+//
+// High-level processing blocks in Run:
+// 1) Setup and safety checks
+//    - Initializes report fields and default log/debug callbacks.
+//    - Validates max archive depth and creates destination root when not dry-run.
+//    - Loads the manifest from destination to enable cross-run deduplication.
+//
+// 2) Work queue traversal
+//    - Builds a queue of walkerItem roots (initial sources and extracted archives).
+//    - Each root is walked with filepath.WalkDir.
+//    - Archive files are extracted into temp dirs and re-enqueued with depth+1,
+//      up to cfg.MaxArchiveDepth.
+//
+// 3) Early file skipping (no copy)
+//    - Program/installer filtering happens first via filter.IsLikelyProgram(path).
+//      Matching files are counted as skipped programs and never copied.
+//    - Category classification then runs via classify.CategoryFor(path).
+//      If cfg.EnabledCategories is set and the category is disabled, the file is
+//      skipped before hashing/copying.
+//
+// 4) Destination planning
+//    - relativeDestinationPath computes the path under category/source prefix.
+//    - uniqueDestinationPath reserves a collision-safe destination path.
+//      If a later step fails or detects duplicate, that reservation is released.
+//
+// 5) Hash and dedup behavior (dry-run vs real copy)
+//    - Dry-run path:
+//      * hashOnly reads source once and computes MD5 without writing any file.
+//      * The hash is checked against:
+//        a) manifest.Hashes (duplicates from previous runs), then
+//        b) in-memory hashes map (duplicates seen earlier in current run).
+//      * On duplicate: file is skipped.
+//      * On unique: counters are updated and manifest map is updated in memory
+//        only for planning/reporting (manifest is not persisted in dry-run).
+//
+//    - Real copy path:
+//      * hashAndCopy reads source once and writes to destination.tmp while
+//        computing MD5 using io.TeeReader.
+//      * Dedup check is performed after temporary copy:
+//        a) manifest duplicate => remove .tmp and skip
+//        b) in-run duplicate   => remove .tmp and skip
+//      * If unique, .tmp is atomically renamed to final path.
+//      * Hash is recorded into manifest and run-local hash map.
+//
+// 6) Finalization
+//    - Optional JSON report is written when cfg.ReportPath is set.
+//    - Manifest is saved only when dry-run is false, making dedup state
+//      resumable across future runs.
+//
+// Supporting helpers in this file:
+// - hashOnly: MD5 of a source file (used by dry-run).
+// - hashAndCopy: one-pass copy+MD5 computation for real runs.
+// - reportFailure: records non-fatal errors without stopping the full walk.
 package runner
 
 import (
@@ -11,6 +65,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"archive-images/internal/archive"
 	"archive-images/internal/classify"
@@ -18,9 +73,10 @@ import (
 )
 
 type walkerItem struct {
-	Root       string
-	Depth      int
-	DestPrefix string
+	Root        string
+	Depth       int
+	DestPrefix  string
+	ArchivePath string // non-empty when this root was extracted from an archive
 }
 
 func Run(cfg Config) (Report, error) {
@@ -41,9 +97,19 @@ func Run(cfg Config) (Report, error) {
 		return report, errors.New("max archive depth must be >= 0")
 	}
 
+	// Each run gets its own output folder named "<dest-base>_YYYY-MM-DD_HH-MM-SS"
+	// so results are easy to review and runs never overwrite each other.
+	stamp := runStamp(cfg.DestinationRoot)
+	runRoot := filepath.Join(cfg.DestinationRoot, stamp)
+	report.RunFolder = runRoot
+
 	if !cfg.DryRun {
+		// Parent dest must exist for the manifest; run folder holds copied files.
 		if err := os.MkdirAll(cfg.DestinationRoot, 0o755); err != nil {
 			return report, fmt.Errorf("create destination root: %w", err)
+		}
+		if err := os.MkdirAll(runRoot, 0o755); err != nil {
+			return report, fmt.Errorf("create run folder: %w", err)
 		}
 	}
 
@@ -60,6 +126,21 @@ func Run(cfg Config) (Report, error) {
 	}
 	defer os.RemoveAll(tempRoot)
 
+	// Open a per-run log file (skipped on dry-run since no files are written).
+	// The log records every duplicate decision and per-archive stats so the
+	// run result can be reviewed without re-running the command.
+	var logWriter io.Writer = io.Discard
+	if !cfg.DryRun {
+		logFile, err := os.OpenFile(filepath.Join(runRoot, "run.log"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			return report, fmt.Errorf("create run log: %w", err)
+		}
+		defer logFile.Close()
+		logWriter = logFile
+		fmt.Fprintf(logWriter, "=== archive-images run: %s ===\n", stamp)
+		fmt.Fprintf(logWriter, "Started: %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
+	}
+
 	enabledCats := map[string]bool{}
 	for _, c := range cfg.EnabledCategories {
 		enabledCats[c] = true
@@ -72,6 +153,8 @@ func Run(cfg Config) (Report, error) {
 	hashes := map[string]string{}
 	destinations := map[string]struct{}{}
 
+	// BFS-style queue of roots to scan. Initial items are user sources; extracted
+	// archives are appended later so nested archives are processed in order.
 	queue := make([]walkerItem, 0, len(cfg.Sources))
 	for _, source := range cfg.Sources {
 		queue = append(queue, walkerItem{
@@ -87,12 +170,20 @@ func Run(cfg Config) (Report, error) {
 
 		cfg.Debugf("scanning %s (archive depth=%d, prefix=%s, queue remaining=%d)", item.Root, item.Depth, item.DestPrefix, len(queue))
 
+		// Snapshot counters before walking so per-archive stats can be computed after.
+		beforeSnap := report
+
 		err := filepath.WalkDir(item.Root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
+				// Non-fatal: record and continue scanning other files.
 				reportFailure(&report, fmt.Sprintf("walk error at %s: %v", path, walkErr))
 				return nil
 			}
 			if d.IsDir() {
+				if path != item.Root && filter.ShouldSkipDirectory(path) {
+					cfg.Debugf("skipping directory subtree: %s", path)
+					return filepath.SkipDir
+				}
 				cfg.Debugf("entering dir %s", path)
 				return nil
 			}
@@ -101,6 +192,7 @@ func Run(cfg Config) (Report, error) {
 			if isArchiveLike(path) {
 				report.ArchivesProcessed++
 				if archive.IsSupportedArchive(path) {
+					// Prevent unbounded recursion from deeply nested archives.
 					if item.Depth >= cfg.MaxArchiveDepth {
 						cfg.Debugf("archive depth limit (%d) reached, skipping: %s", cfg.MaxArchiveDepth, path)
 						reportFailure(&report, fmt.Sprintf("archive depth limit reached: %s", path))
@@ -122,11 +214,14 @@ func Run(cfg Config) (Report, error) {
 						reportFailure(&report, fmt.Sprintf("plan archive prefix %s: %v", path, err))
 						return nil
 					}
+					// Queue extracted content as another root; this reuses the same
+					// processing pipeline (filters, classification, dedup, copy).
 					report.ArchivesExtracted++
 					queue = append(queue, walkerItem{
-						Root:       extractTo,
-						Depth:      item.Depth + 1,
-						DestPrefix: archivePrefix,
+					Root:        extractTo,
+					Depth:       item.Depth + 1,
+					DestPrefix:  archivePrefix,
+					ArchivePath: path,
 					})
 					cfg.Debugf("extracted %s -> enqueued (archive depth=%d, queue size=%d)", path, item.Depth+1, len(queue))
 				} else {
@@ -137,6 +232,7 @@ func Run(cfg Config) (Report, error) {
 			}
 
 			if filter.IsLikelyProgram(path) {
+				// Safety filter: executable/installer-like files are intentionally excluded.
 				cfg.Debugf("skipping program: %s", path)
 				report.SkippedPrograms++
 				return nil
@@ -156,7 +252,7 @@ func Run(cfg Config) (Report, error) {
 				return nil
 			}
 
-			destinationPath, err := uniqueDestinationPath(cfg.DestinationRoot, category, relPath, destinations)
+			destinationPath, err := uniqueDestinationPath(runRoot, category, relPath, destinations)
 			if err != nil {
 				reportFailure(&report, fmt.Sprintf("plan destination %s: %v", path, err))
 				return nil
@@ -167,18 +263,21 @@ func Run(cfg Config) (Report, error) {
 				cfg.Debugf("hashing %s", path)
 				hash, err := hashOnly(path, ioBuf)
 				if err != nil {
+					// Release reserved destination because this file will not be copied.
 					delete(destinations, destinationPath)
 					reportFailure(&report, fmt.Sprintf("hash %s: %v", path, err))
 					return nil
 				}
 				if _, inManifest := manifest.Hashes[hash]; inManifest {
 					cfg.Debugf("duplicate (manifest, hash=%s): %s", hash, path)
+					fmt.Fprintf(logWriter, "[DUPLICATE] %s\n  => already at: %s\n  hash: %s\n\n", path, manifest.Hashes[hash], hash)
 					delete(destinations, destinationPath)
 					report.SkippedDuplicates++
 					return nil
 				}
 				if _, seen := hashes[hash]; seen {
 					cfg.Debugf("duplicate (in-run, hash=%s): %s", hash, path)
+					fmt.Fprintf(logWriter, "[DUPLICATE] %s\n  => same content as: %s\n  hash: %s\n\n", path, hashes[hash], hash)
 					delete(destinations, destinationPath)
 					report.SkippedDuplicates++
 					return nil
@@ -196,6 +295,7 @@ func Run(cfg Config) (Report, error) {
 			// the file is only read once, halving the I/O cost on an HDD.
 			cfg.Debugf("copying %s -> %s", path, destinationPath)
 			if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+				// Destination was reserved above; release it on failure.
 				delete(destinations, destinationPath)
 				reportFailure(&report, fmt.Sprintf("mkdir %s: %v", filepath.Dir(destinationPath), err))
 				return nil
@@ -215,6 +315,7 @@ func Run(cfg Config) (Report, error) {
 			// in the destination tree.
 			if _, inManifest := manifest.Hashes[hash]; inManifest {
 				cfg.Debugf("duplicate (manifest, hash=%s): %s", hash, path)
+				fmt.Fprintf(logWriter, "[DUPLICATE] %s\n  => already at: %s\n  hash: %s\n\n", path, manifest.Hashes[hash], hash)
 				os.Remove(tmpPath)
 				delete(destinations, destinationPath)
 				report.SkippedDuplicates++
@@ -222,6 +323,7 @@ func Run(cfg Config) (Report, error) {
 			}
 			if _, seen := hashes[hash]; seen {
 				cfg.Debugf("duplicate (in-run, hash=%s): %s", hash, path)
+				fmt.Fprintf(logWriter, "[DUPLICATE] %s\n  => same content as: %s\n  hash: %s\n\n", path, hashes[hash], hash)
 				os.Remove(tmpPath)
 				delete(destinations, destinationPath)
 				report.SkippedDuplicates++
@@ -230,6 +332,7 @@ func Run(cfg Config) (Report, error) {
 			hashes[hash] = path
 
 			if err := os.Rename(tmpPath, destinationPath); err != nil {
+				// Keep temp cleanup + reservation rollback symmetric on all failures.
 				os.Remove(tmpPath)
 				delete(destinations, destinationPath)
 				reportFailure(&report, fmt.Sprintf("rename %s: %v", tmpPath, err))
@@ -245,6 +348,16 @@ func Run(cfg Config) (Report, error) {
 		if err != nil {
 			reportFailure(&report, fmt.Sprintf("walk root %s: %v", item.Root, err))
 		}
+
+		// Write per-archive stats when this root was produced by an extracted archive.
+		if item.ArchivePath != "" {
+			fmt.Fprintf(logWriter, "[ARCHIVE] %s\n", item.ArchivePath)
+			fmt.Fprintf(logWriter, "  Files seen:       %d\n", report.TotalFilesSeen-beforeSnap.TotalFilesSeen)
+			fmt.Fprintf(logWriter, "  Copied:           %d\n", report.CopiedFiles-beforeSnap.CopiedFiles)
+			fmt.Fprintf(logWriter, "  Duplicates:       %d\n", report.SkippedDuplicates-beforeSnap.SkippedDuplicates)
+			fmt.Fprintf(logWriter, "  Programs skipped: %d\n", report.SkippedPrograms-beforeSnap.SkippedPrograms)
+			fmt.Fprintf(logWriter, "  Failures:         %d\n\n", report.Failures-beforeSnap.Failures)
+		}
 	}
 
 	if cfg.ReportPath != "" {
@@ -259,6 +372,28 @@ func Run(cfg Config) (Report, error) {
 			return report, fmt.Errorf("save manifest: %w", err)
 		}
 		cfg.Logf("Manifest saved with %d hashes", len(manifest.Hashes))
+	}
+
+	// Write final run stats at the bottom of the log file.
+	fmt.Fprintf(logWriter, "=== RUN STATS ===\n")
+	fmt.Fprintf(logWriter, "Destination:         %s\n", runRoot)
+	fmt.Fprintf(logWriter, "Total files seen:    %d\n", report.TotalFilesSeen)
+	fmt.Fprintf(logWriter, "Files copied:        %d\n", report.CopiedFiles)
+	fmt.Fprintf(logWriter, "Duplicates skipped:  %d\n", report.SkippedDuplicates)
+	fmt.Fprintf(logWriter, "Programs skipped:    %d\n", report.SkippedPrograms)
+	fmt.Fprintf(logWriter, "Archives processed:  %d\n", report.ArchivesProcessed)
+	fmt.Fprintf(logWriter, "Archives extracted:  %d\n", report.ArchivesExtracted)
+	fmt.Fprintf(logWriter, "Failures:            %d\n", report.Failures)
+	fmt.Fprintf(logWriter, "\nBy category:\n")
+	for _, cat := range []string{
+		classify.CategoryDocuments,
+		classify.CategoryPhotos,
+		classify.CategoryPictures,
+		classify.CategoryVideos,
+		classify.CategoryMusic,
+		classify.CategoryOther,
+	} {
+		fmt.Fprintf(logWriter, "  %-12s %d\n", cat+":", report.ByCategory[cat])
 	}
 
 	return report, nil
@@ -396,4 +531,15 @@ func writeReport(path string, report Report) error {
 func isArchiveLike(path string) bool {
 	p := strings.ToLower(path)
 	return strings.HasSuffix(p, ".zip") || strings.HasSuffix(p, ".tar") || strings.HasSuffix(p, ".tar.gz") || strings.HasSuffix(p, ".tgz") || strings.HasSuffix(p, ".rar") || strings.HasSuffix(p, ".7z")
+}
+
+// runStamp returns a folder name derived from the destination base name and
+// the current wall clock time, e.g. "organized_2026-03-26_14-30-00".
+// Each run produces a distinct top-level folder so results never collide.
+func runStamp(destRoot string) string {
+	base := filepath.Base(filepath.Clean(destRoot))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		base = "run"
+	}
+	return base + "_" + time.Now().Format("2006-01-02_15-04-05")
 }
