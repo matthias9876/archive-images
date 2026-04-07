@@ -52,7 +52,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          OUTPUT_FILE=${{ matrix.artifact }}
+          OUTPUT_FILE="${{ matrix.artifact }}"
           go build -o "$OUTPUT_FILE" ./cmd/archive-images
           ls -lh "$OUTPUT_FILE"
         env:
